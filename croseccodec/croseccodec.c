@@ -116,6 +116,208 @@ NTSTATUS ConnectToEc(
 	return status;
 }
 
+static NTSTATUS send_ec_command(
+	_In_ PCROSECCODEC_CONTEXT pDevice,
+	UINT32 cmd,
+	UINT8* out,
+	size_t outSize,
+	UINT8* in,
+	size_t inSize)
+{
+	struct cros_ec_command* msg = ExAllocatePoolWithTag(NonPagedPool, sizeof(struct cros_ec_command) + max(outSize, inSize), CROSECCODEC_POOL_TAG);
+	if (!msg) {
+		return STATUS_NO_MEMORY;
+	}
+	msg->version = 0;
+	msg->command = cmd;
+	msg->outsize = outSize;
+	msg->insize = inSize;
+
+	if (outSize)
+		memcpy(msg->data, out, outSize);
+
+	NTSTATUS status = (*pDevice->CrosEcCmdXferStatus)(pDevice->CrosEcBusContext, msg);
+	if (!NT_SUCCESS(status)) {
+		goto exit;
+	}
+
+	if (in && inSize) {
+		memcpy(in, msg->data, inSize);
+	}
+
+exit:
+	ExFreePoolWithTag(msg, CROSECCODEC_POOL_TAG);
+	return status;
+}
+
+NTSTATUS
+StartCodec(
+	PCROSECCODEC_CONTEXT pDevice
+) {
+	NTSTATUS status = STATUS_SUCCESS;
+
+	if (!pDevice->firstInitDone) {
+		struct ec_param_ec_codec_i2s_rx i2sRxCmd;
+		struct ec_response_ec_codec_dmic_get_max_gain dmicGain;
+
+		RtlZeroMemory(&i2sRxCmd, sizeof(i2sRxCmd));
+		i2sRxCmd.cmd = EC_CODEC_I2S_RX_RESET;
+		status = send_ec_command(pDevice, EC_CMD_EC_CODEC_I2S_RX, (UINT8*)&i2sRxCmd, sizeof(i2sRxCmd), NULL, 0);
+		if (!NT_SUCCESS(status)) {
+			CrosEcCodecPrint(DEBUG_LEVEL_ERROR, DBG_PNP, "Failed set set i2s reset\n");
+			return status;
+		}
+
+		{
+			struct ec_param_ec_codec_dmic dmicCmd;
+			RtlZeroMemory(&dmicCmd, sizeof(dmicCmd));
+			dmicCmd.cmd = EC_CODEC_DMIC_GET_MAX_GAIN;
+
+			status = send_ec_command(pDevice, EC_CMD_EC_CODEC_DMIC, (UINT8*)&dmicCmd, sizeof(dmicCmd), (UINT8*)&dmicGain, sizeof(dmicGain));
+			if (!NT_SUCCESS(status)) {
+				CrosEcCodecPrint(DEBUG_LEVEL_ERROR, DBG_PNP, "Failed to get max gain\n");
+				return status;
+			}
+
+			RtlZeroMemory(&dmicCmd, sizeof(dmicCmd));
+			dmicCmd.cmd = EC_CODEC_DMIC_SET_GAIN_IDX;
+			dmicCmd.set_gain_idx_param.channel = EC_CODEC_DMIC_CHANNEL_0;
+			dmicCmd.set_gain_idx_param.gain = dmicGain.max_gain;
+			status = send_ec_command(pDevice, EC_CMD_EC_CODEC_DMIC, (UINT8*)&dmicCmd, sizeof(dmicCmd), NULL, 0);
+			if (!NT_SUCCESS(status)) {
+				CrosEcCodecPrint(DEBUG_LEVEL_ERROR, DBG_PNP, "Failed set gain on channel 0\n");
+				return status;
+			}
+
+			RtlZeroMemory(&dmicCmd, sizeof(dmicCmd));
+			dmicCmd.cmd = EC_CODEC_DMIC_SET_GAIN_IDX;
+			dmicCmd.set_gain_idx_param.channel = EC_CODEC_DMIC_CHANNEL_1;
+			dmicCmd.set_gain_idx_param.gain = dmicGain.max_gain;
+			status = send_ec_command(pDevice, EC_CMD_EC_CODEC_DMIC, (UINT8*)&dmicCmd, sizeof(dmicCmd), NULL, 0);
+			if (!NT_SUCCESS(status)) {
+				CrosEcCodecPrint(DEBUG_LEVEL_ERROR, DBG_PNP, "Failed set gain on channel 1\n");
+				return status;
+			}
+		}
+
+		pDevice->firstInitDone = TRUE;
+	}
+
+	struct ec_param_ec_codec_i2s_rx i2sRxCmd;
+
+	RtlZeroMemory(&i2sRxCmd, sizeof(i2sRxCmd));
+	i2sRxCmd.cmd = EC_CODEC_I2S_RX_SET_SAMPLE_DEPTH;
+	i2sRxCmd.set_sample_depth_param.depth = EC_CODEC_I2S_RX_SAMPLE_DEPTH_16;
+	status = send_ec_command(pDevice, EC_CMD_EC_CODEC_I2S_RX, (UINT8*)&i2sRxCmd, sizeof(i2sRxCmd), NULL, 0);
+	if (!NT_SUCCESS(status)) {
+		CrosEcCodecPrint(DEBUG_LEVEL_ERROR, DBG_PNP, "Failed set set i2s sample depth\n");
+		return status;
+	}
+
+	RtlZeroMemory(&i2sRxCmd, sizeof(i2sRxCmd));
+	i2sRxCmd.cmd = EC_CODEC_I2S_RX_SET_BCLK;
+	i2sRxCmd.set_bclk_param.bclk = 48000 * 64;
+	status = send_ec_command(pDevice, EC_CMD_EC_CODEC_I2S_RX, (UINT8*)&i2sRxCmd, sizeof(i2sRxCmd), NULL, 0);
+	if (!NT_SUCCESS(status)) {
+		CrosEcCodecPrint(DEBUG_LEVEL_ERROR, DBG_PNP, "Failed set set i2s bclk\n");
+		return status;
+	}
+
+	RtlZeroMemory(&i2sRxCmd, sizeof(i2sRxCmd));
+	i2sRxCmd.cmd = EC_CODEC_I2S_RX_SET_DAIFMT;
+	i2sRxCmd.set_daifmt_param.daifmt = EC_CODEC_I2S_RX_DAIFMT_I2S;
+	status = send_ec_command(pDevice, EC_CMD_EC_CODEC_I2S_RX, (UINT8*)&i2sRxCmd, sizeof(i2sRxCmd), NULL, 0);
+	if (!NT_SUCCESS(status)) {
+		CrosEcCodecPrint(DEBUG_LEVEL_ERROR, DBG_PNP, "Failed set set i2s DAI fmt\n");
+		return status;
+	}
+
+	RtlZeroMemory(&i2sRxCmd, sizeof(i2sRxCmd));
+	i2sRxCmd.cmd = EC_CODEC_I2S_RX_ENABLE;
+	status = send_ec_command(pDevice, EC_CMD_EC_CODEC_I2S_RX, (UINT8*)&i2sRxCmd, sizeof(i2sRxCmd), NULL, 0);
+	if (!NT_SUCCESS(status)) {
+		CrosEcCodecPrint(DEBUG_LEVEL_ERROR, DBG_PNP, "Failed set set i2s enable\n");
+		return status;
+	}
+
+	pDevice->DevicePoweredOn = TRUE;
+	return status;
+}
+
+NTSTATUS
+StopCodec(
+	PCROSECCODEC_CONTEXT pDevice
+) {
+	NTSTATUS status = STATUS_SUCCESS;
+
+	struct ec_param_ec_codec_i2s_rx i2sRxCmd;
+	RtlZeroMemory(&i2sRxCmd, sizeof(i2sRxCmd));
+	i2sRxCmd.cmd = EC_CODEC_I2S_RX_DISABLE;
+	status = send_ec_command(pDevice, EC_CMD_EC_CODEC_I2S_RX, (UINT8*)&i2sRxCmd, sizeof(i2sRxCmd), NULL, 0);
+	if (!NT_SUCCESS(status)) {
+		CrosEcCodecPrint(DEBUG_LEVEL_ERROR, DBG_PNP, "Failed set set i2s disable\n");
+		return status;
+	}
+
+	pDevice->DevicePoweredOn = FALSE;
+	return status;
+}
+
+int CsAudioArg2 = 1;
+
+VOID
+CSAudioRegisterEndpoint(
+	PCROSECCODEC_CONTEXT pDevice
+) {
+	CsAudioArg arg;
+	RtlZeroMemory(&arg, sizeof(CsAudioArg));
+	arg.argSz = sizeof(CsAudioArg);
+	arg.endpointType = CSAudioEndpointTypeMicArray;
+	arg.endpointRequest = CSAudioEndpointRegister;
+	ExNotifyCallback(pDevice->CSAudioAPICallback, &arg, &CsAudioArg2);
+}
+
+VOID
+CsAudioCallbackFunction(
+	IN PCROSECCODEC_CONTEXT pDevice,
+	CsAudioArg* arg,
+	PVOID Argument2
+) {
+	if (!pDevice) {
+		return;
+	}
+
+	if (Argument2 == &CsAudioArg2) {
+		return;
+	}
+
+	pDevice->CSAudioManaged = TRUE;
+
+	CsAudioArg localArg;
+	RtlZeroMemory(&localArg, sizeof(CsAudioArg));
+	RtlCopyMemory(&localArg, arg, min(arg->argSz, sizeof(CsAudioArg)));
+
+	if (localArg.endpointType == CSAudioEndpointTypeDSP && localArg.endpointRequest == CSAudioEndpointRegister) {
+		CSAudioRegisterEndpoint(pDevice);
+	}
+	else if (localArg.endpointType != CSAudioEndpointTypeMicArray) {
+		return;
+	}
+
+	if (localArg.endpointRequest == CSAudioEndpointStop) {
+		if (pDevice->CSAudioRequestsOn) {
+			WdfDeviceResumeIdle(pDevice->FxDevice);
+			pDevice->CSAudioRequestsOn = FALSE;
+		}
+	}
+	if (localArg.endpointRequest == CSAudioEndpointStart) {
+		if (!pDevice->CSAudioRequestsOn) {
+			WdfDeviceStopIdle(pDevice->FxDevice, TRUE);
+			pDevice->CSAudioRequestsOn = TRUE;
+		}
+	}
+}
+
 NTSTATUS
 OnPrepareHardware(
 _In_  WDFDEVICE     FxDevice,
@@ -160,6 +362,47 @@ Status
 }
 
 NTSTATUS
+OnSelfManagedIoInit(
+	_In_
+	WDFDEVICE FxDevice
+) {
+	PCROSECCODEC_CONTEXT pDevice = GetDeviceContext(FxDevice);
+	NTSTATUS status = STATUS_SUCCESS;
+
+	// CS Audio Callback
+
+	UNICODE_STRING CSAudioCallbackAPI;
+	RtlInitUnicodeString(&CSAudioCallbackAPI, L"\\CallBack\\CsAudioCallbackAPI");
+
+
+	OBJECT_ATTRIBUTES attributes;
+	InitializeObjectAttributes(&attributes,
+		&CSAudioCallbackAPI,
+		OBJ_KERNEL_HANDLE | OBJ_OPENIF | OBJ_CASE_INSENSITIVE | OBJ_PERMANENT,
+		NULL,
+		NULL
+	);
+	status = ExCreateCallback(&pDevice->CSAudioAPICallback, &attributes, TRUE, TRUE);
+	if (!NT_SUCCESS(status)) {
+
+		return status;
+	}
+
+	pDevice->CSAudioAPICallbackObj = ExRegisterCallback(pDevice->CSAudioAPICallback,
+		CsAudioCallbackFunction,
+		pDevice
+	);
+	if (!pDevice->CSAudioAPICallbackObj) {
+
+		return STATUS_NO_CALLBACK_ACTIVE;
+	}
+
+	CSAudioRegisterEndpoint(pDevice);
+
+	return status;
+}
+
+NTSTATUS
 OnReleaseHardware(
 _In_  WDFDEVICE     FxDevice,
 _In_  WDFCMRESLIST  FxResourcesTranslated
@@ -180,114 +423,22 @@ Status
 
 --*/
 {
+	PCROSECCODEC_CONTEXT pDevice = GetDeviceContext(FxDevice);
 	NTSTATUS status = STATUS_SUCCESS;
 
 	UNREFERENCED_PARAMETER(FxResourcesTranslated);
 
+	if (pDevice->CSAudioAPICallbackObj) {
+		ExUnregisterCallback(pDevice->CSAudioAPICallbackObj);
+		pDevice->CSAudioAPICallbackObj = NULL;
+	}
+
+	if (pDevice->CSAudioAPICallback) {
+		ObfDereferenceObject(pDevice->CSAudioAPICallback);
+		pDevice->CSAudioAPICallback = NULL;
+	}
+
 	return status;
-}
-
-static NTSTATUS send_ec_command(
-	_In_ PCROSECCODEC_CONTEXT pDevice,
-	UINT32 cmd,
-	UINT8* out,
-	size_t outSize,
-	UINT8* in,
-	size_t inSize)
-{
-	struct cros_ec_command* msg = ExAllocatePoolWithTag(NonPagedPool, sizeof(struct cros_ec_command) + max(outSize, inSize), CROSECCODEC_POOL_TAG);
-	if (!msg) {
-		return STATUS_NO_MEMORY;
-	}
-	msg->version = 0;
-	msg->command = cmd;
-	msg->outsize = outSize;
-	msg->insize = inSize;
-
-	if (outSize)
-		memcpy(msg->data, out, outSize);
-
-	NTSTATUS status = (*pDevice->CrosEcCmdXferStatus)(pDevice->CrosEcBusContext, msg);
-	if (!NT_SUCCESS(status)) {
-		goto exit;
-	}
-
-	if (in && inSize) {
-		memcpy(in, msg->data, inSize);
-	}
-
-exit:
-	ExFreePoolWithTag(msg, CROSECCODEC_POOL_TAG);
-	return status;
-}
-
-VOID
-CrosEcBootWorkItem(
-	IN WDFWORKITEM  WorkItem
-)
-{
-	WDFDEVICE Device = (WDFDEVICE)WdfWorkItemGetParentObject(WorkItem);
-	PCROSECCODEC_CONTEXT pDevice = GetDeviceContext(Device);
-
-	struct ec_param_ec_codec_i2s_rx i2sRxCmd;
-
-	RtlZeroMemory(&i2sRxCmd, sizeof(i2sRxCmd));
-	i2sRxCmd.cmd = EC_CODEC_I2S_RX_SET_SAMPLE_DEPTH;
-	i2sRxCmd.set_sample_depth_param.depth = EC_CODEC_I2S_RX_SAMPLE_DEPTH_16;
-	NTSTATUS status = send_ec_command(pDevice, EC_CMD_EC_CODEC_I2S_RX, (UINT8*)&i2sRxCmd, sizeof(i2sRxCmd), NULL, 0);
-	if (!NT_SUCCESS(status)) {
-		CrosEcCodecPrint(DEBUG_LEVEL_ERROR, DBG_PNP, "Failed set set i2s sample depth\n");
-		goto exit;
-	}
-
-	RtlZeroMemory(&i2sRxCmd, sizeof(i2sRxCmd));
-	i2sRxCmd.cmd = EC_CODEC_I2S_RX_SET_BCLK;
-	i2sRxCmd.set_bclk_param.bclk = 48000 * 64;
-	status = send_ec_command(pDevice, EC_CMD_EC_CODEC_I2S_RX, (UINT8*)&i2sRxCmd, sizeof(i2sRxCmd), NULL, 0);
-	if (!NT_SUCCESS(status)) {
-		CrosEcCodecPrint(DEBUG_LEVEL_ERROR, DBG_PNP, "Failed set set i2s bclk\n");
-		goto exit;
-	}
-
-	RtlZeroMemory(&i2sRxCmd, sizeof(i2sRxCmd));
-	i2sRxCmd.cmd = EC_CODEC_I2S_RX_SET_DAIFMT;
-	i2sRxCmd.set_daifmt_param.daifmt = EC_CODEC_I2S_RX_DAIFMT_I2S;
-	status = send_ec_command(pDevice, EC_CMD_EC_CODEC_I2S_RX, (UINT8*)&i2sRxCmd, sizeof(i2sRxCmd), NULL, 0);
-	if (!NT_SUCCESS(status)) {
-		CrosEcCodecPrint(DEBUG_LEVEL_ERROR, DBG_PNP, "Failed set set i2s DAI fmt\n");
-		goto exit;
-	}
-
-	RtlZeroMemory(&i2sRxCmd, sizeof(i2sRxCmd));
-	i2sRxCmd.cmd = EC_CODEC_I2S_RX_ENABLE;
-	status = send_ec_command(pDevice, EC_CMD_EC_CODEC_I2S_RX, (UINT8*)&i2sRxCmd, sizeof(i2sRxCmd), NULL, 0);
-	if (!NT_SUCCESS(status)) {
-		CrosEcCodecPrint(DEBUG_LEVEL_ERROR, DBG_PNP, "Failed set set i2s enable\n");
-		goto exit;
-	}
-
-exit:
-	WdfObjectDelete(WorkItem);
-}
-
-void CrosEcCodecBootTimer(_In_ WDFTIMER hTimer) {
-	WDFDEVICE Device = (WDFDEVICE)WdfTimerGetParentObject(hTimer);
-
-	WDF_OBJECT_ATTRIBUTES attributes;
-	WDF_WORKITEM_CONFIG workitemConfig;
-	WDFWORKITEM hWorkItem;
-
-	WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
-	WDF_OBJECT_ATTRIBUTES_SET_CONTEXT_TYPE(&attributes, CROSECCODEC_CONTEXT);
-	attributes.ParentObject = Device;
-	WDF_WORKITEM_CONFIG_INIT(&workitemConfig, CrosEcBootWorkItem);
-
-	WdfWorkItemCreate(&workitemConfig,
-		&attributes,
-		&hWorkItem);
-
-	WdfWorkItemEnqueue(hWorkItem);
-	WdfTimerStop(hTimer, FALSE);
 }
 
 NTSTATUS
@@ -316,60 +467,7 @@ Status
 	UNREFERENCED_PARAMETER(FxPreviousState);
 	NTSTATUS status = STATUS_SUCCESS;
 
-	struct ec_param_ec_codec_i2s_rx i2sRxCmd;
-	struct ec_response_ec_codec_dmic_get_max_gain dmicGain;
-
-	RtlZeroMemory(&i2sRxCmd, sizeof(i2sRxCmd));
-	i2sRxCmd.cmd = EC_CODEC_I2S_RX_RESET;
-	status = send_ec_command(pDevice, EC_CMD_EC_CODEC_I2S_RX, (UINT8*)&i2sRxCmd, sizeof(i2sRxCmd), NULL, 0);
-	if (!NT_SUCCESS(status)) {
-		CrosEcCodecPrint(DEBUG_LEVEL_ERROR, DBG_PNP, "Failed set set i2s reset\n");
-		return status;
-	}
-
-	{
-		struct ec_param_ec_codec_dmic dmicCmd;
-		RtlZeroMemory(&dmicCmd, sizeof(dmicCmd));
-		dmicCmd.cmd = EC_CODEC_DMIC_GET_MAX_GAIN;
-
-		status = send_ec_command(pDevice, EC_CMD_EC_CODEC_DMIC, (UINT8*)&dmicCmd, sizeof(dmicCmd), (UINT8*)&dmicGain, sizeof(dmicGain));
-		if (!NT_SUCCESS(status)) {
-			CrosEcCodecPrint(DEBUG_LEVEL_ERROR, DBG_PNP, "Failed to get max gain\n");
-			return status;
-		}
-
-		RtlZeroMemory(&dmicCmd, sizeof(dmicCmd));
-		dmicCmd.cmd = EC_CODEC_DMIC_SET_GAIN_IDX;
-		dmicCmd.set_gain_idx_param.channel = EC_CODEC_DMIC_CHANNEL_0;
-		dmicCmd.set_gain_idx_param.gain = dmicGain.max_gain;
-		status = send_ec_command(pDevice, EC_CMD_EC_CODEC_DMIC, (UINT8*)&dmicCmd, sizeof(dmicCmd), NULL, 0);
-		if (!NT_SUCCESS(status)) {
-			CrosEcCodecPrint(DEBUG_LEVEL_ERROR, DBG_PNP, "Failed set gain on channel 0\n");
-			return status;
-		}
-
-		RtlZeroMemory(&dmicCmd, sizeof(dmicCmd));
-		dmicCmd.cmd = EC_CODEC_DMIC_SET_GAIN_IDX;
-		dmicCmd.set_gain_idx_param.channel = EC_CODEC_DMIC_CHANNEL_1;
-		dmicCmd.set_gain_idx_param.gain = dmicGain.max_gain;
-		status = send_ec_command(pDevice, EC_CMD_EC_CODEC_DMIC, (UINT8*)&dmicCmd, sizeof(dmicCmd), NULL, 0);
-		if (!NT_SUCCESS(status)) {
-			CrosEcCodecPrint(DEBUG_LEVEL_ERROR, DBG_PNP, "Failed set gain on channel 1\n");
-			return status;
-		}
-	}
-
-	WDF_TIMER_CONFIG              timerConfig;
-	WDFTIMER                      hTimer;
-	WDF_OBJECT_ATTRIBUTES         attributes;
-
-	WDF_TIMER_CONFIG_INIT(&timerConfig, CrosEcCodecBootTimer);
-
-	WDF_OBJECT_ATTRIBUTES_INIT(&attributes);
-	attributes.ParentObject = pDevice->FxDevice;
-	status = WdfTimerCreate(&timerConfig, &attributes, &hTimer);
-
-	WdfTimerStart(hTimer, WDF_REL_TIMEOUT_IN_MS(2000));
+	status = StartCodec(pDevice);
 
 	return status;
 }
@@ -396,9 +494,12 @@ Status
 
 --*/
 {
+	PCROSECCODEC_CONTEXT pDevice = GetDeviceContext(FxDevice);
 	UNREFERENCED_PARAMETER(FxTargetState);
 
 	NTSTATUS status = STATUS_SUCCESS;
+
+	status = StopCodec(pDevice);
 
 	return status;
 }
@@ -427,6 +528,7 @@ IN PWDFDEVICE_INIT DeviceInit
 
 		pnpCallbacks.EvtDevicePrepareHardware = OnPrepareHardware;
 		pnpCallbacks.EvtDeviceReleaseHardware = OnReleaseHardware;
+		pnpCallbacks.EvtDeviceSelfManagedIoInit = OnSelfManagedIoInit;
 		pnpCallbacks.EvtDeviceD0Entry = OnD0Entry;
 		pnpCallbacks.EvtDeviceD0Exit = OnD0Exit;
 
@@ -458,6 +560,15 @@ IN PWDFDEVICE_INIT DeviceInit
 	devContext = GetDeviceContext(device);
 
 	devContext->FxDevice = device;
+
+	WDF_DEVICE_POWER_POLICY_IDLE_SETTINGS IdleSettings;
+
+	WDF_DEVICE_POWER_POLICY_IDLE_SETTINGS_INIT(&IdleSettings, IdleCannotWakeFromS0);
+	IdleSettings.IdleTimeoutType = SystemManagedIdleTimeoutWithHint;
+	IdleSettings.IdleTimeout = 1000;
+	IdleSettings.Enabled = WdfTrue;
+
+	WdfDeviceAssignS0IdleSettings(devContext->FxDevice, &IdleSettings);
 
 	return status;
 }

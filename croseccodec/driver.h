@@ -68,6 +68,38 @@ typedef struct _CROSEC_INTERFACE_STANDARD {
     PCROSEC_CHECK_FEATURES           CheckFeatures;
 } CROSEC_INTERFACE_STANDARD, * PCROSEC_INTERFACE_STANDARD;
 
+typedef enum {
+    CSAudioEndpointTypeDSP,
+    CSAudioEndpointTypeSpeaker,
+    CSAudioEndpointTypeHeadphone,
+    CSAudioEndpointTypeMicArray,
+    CSAudioEndpointTypeMicJack
+} CSAudioEndpointType;
+
+typedef enum {
+    CSAudioEndpointRegister,
+    CSAudioEndpointStart,
+    CSAudioEndpointStop,
+    CSAudioEndpointOverrideFormat
+} CSAudioEndpointRequest;
+
+typedef struct CSAUDIOFORMATOVERRIDE {
+    UINT16 channels;
+    UINT16 frequency;
+    UINT16 bitsPerSample;
+    UINT16 validBitsPerSample;
+    BOOLEAN force32BitOutputContainer;
+} CsAudioFormatOverride;
+
+typedef struct CSAUDIOARG {
+    UINT32 argSz;
+    CSAudioEndpointType endpointType;
+    CSAudioEndpointRequest endpointRequest;
+    union {
+        CsAudioFormatOverride formatOverride;
+    };
+} CsAudioArg, * PCsAudioArg;
+
 typedef struct _CROSECCODEC_CONTEXT
 {
 	//
@@ -81,6 +113,16 @@ typedef struct _CROSECCODEC_CONTEXT
     PCROSEC_CMD_XFER_STATUS CrosEcCmdXferStatus;
 
     WDFIOTARGET busIoTarget;
+
+    BOOLEAN DevicePoweredOn;
+
+    PCALLBACK_OBJECT CSAudioAPICallback;
+    PVOID CSAudioAPICallbackObj;
+
+    BOOLEAN CSAudioManaged;
+    BOOLEAN CSAudioRequestsOn;
+
+    BOOLEAN firstInitDone;
 
 } CROSECCODEC_CONTEXT, *PCROSECCODEC_CONTEXT;
 
